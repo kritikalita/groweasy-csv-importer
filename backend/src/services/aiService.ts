@@ -48,8 +48,8 @@ export class AIService {
       - crm_note: Use this for remarks, follow-up notes, comments, extra phone numbers, or extra emails.
 
       CRITICAL SYSTEM EXTRACTION RULES:
-      1. Skip Criteria: If a record has NEITHER an email nor a mobile number, completely omit it from the records array and increment skippedCount.
-      2. Multiple Contacts: If multiple emails or phone numbers exist in a record, map the first one to the standard field and append all remaining ones into 'crm_note'.
+      1. Skip Criteria: If a record has NEITHER a valid email nor a mobile number, completely omit it from the returned records array and increment skippedCount.
+      2. Multiple Contacts: If multiple email addresses or mobile numbers exist in a single record, map the first one to the standard field and append all remaining ones explicitly into 'crm_note'.
       3. Clean Rows: Do not introduce unintended raw newline breaks inside text values. Use '\\n' if a break is needed.
 
       Respond ONLY with a valid JSON object matching this structure:

@@ -19,34 +19,81 @@ export const importCSVHandler = async (req: MulterRequest, res: Response): Promi
     const csvText = req.file.buffer.toString('utf-8');
 
     // 3. Convert CSV rows to structured JavaScript arrays
-    const rawRows = AIService.parseCSV(csvText);
+    const allRawRows = AIService.parseCSV(csvText);
 
-    if (rawRows.length === 0) {
+    if (allRawRows.length === 0) {
       res.status(400).json({ error: 'The uploaded CSV file contains no data rows.' });
       return;
     }
 
-    const finalRecords: CRMRecord[] = [];
-    let totalSkipped = 0;
+    const rowsToProcess: any[] = [];
+    const skippedRecords: any[] = [];
 
-    // 4. Batch Processing Loop (Send 25 records per batch iteration)
-    const BATCH_SIZE = 25;
-    for (let i = 0; i < rawRows.length; i += BATCH_SIZE) {
-      const batch = rawRows.slice(i, i + BATCH_SIZE);
+    // 🌟 REQ IMPLEMENTATION: Rule 7 Pre-Screening Validation Layer
+    // Scan headers/keys dynamically for any column containing variations of 'mail', 'phone', 'contact', 'mobile', or 'num'
+    for (const row of allRawRows) {
+      const keys = Object.keys(row);
       
-      console.log(`🔄 Processing batch ${Math.floor(i / BATCH_SIZE) + 1} of ${Math.ceil(rawRows.length / BATCH_SIZE)}...`);
+      // Concatenate all field values in the row to find contact clues
+      let combinedContactText = '';
+      keys.forEach((key) => {
+        const lowerKey = key.toLowerCase();
+        const val = String(row[key] || '').trim();
+        
+        if (
+          lowerKey.includes('mail') || 
+          lowerKey.includes('phone') || 
+          lowerKey.includes('contact') || 
+          lowerKey.includes('mobile') || 
+          lowerKey.includes('num') || 
+          val.includes('@') || 
+          /^\+?[0-9\s\-]{7,15}$/.test(val)
+        ) {
+          combinedContactText += ' ' + val;
+        }
+      });
+
+      // Simple regex check: does it have an email (@) or digits for a phone number?
+      const hasEmail = combinedContactText.includes('@');
+      const hasPhone = /[0-9]{7,}/.test(combinedContactText);
+
+      if (hasEmail || hasPhone) {
+        rowsToProcess.push(row);
+      } else {
+        // If it fails Rule 7, append the raw data row into our diagnostic logs
+        skippedRecords.push(row);
+      }
+    }
+
+    // 4. Batch Processing Loop (Send 25 valid records per batch iteration)
+    const finalRecords: CRMRecord[] = [];
+    let totalAIEngineSkipped = 0;
+
+    // 4. Batch Processing Loop (Send 25 valid records per batch iteration)
+    const BATCH_SIZE = 25;
+    for (let i = 0; i < rowsToProcess.length; i += BATCH_SIZE) {
+      const batch = rowsToProcess.slice(i, i + BATCH_SIZE);
+      
+      console.log(`🔄 Processing batch ${Math.floor(i / BATCH_SIZE) + 1} of ${Math.ceil(rowsToProcess.length / BATCH_SIZE)}...`);
       
       const response = await AIService.processBatch(batch);
       
       finalRecords.push(...response.records);
-      totalSkipped += response.skippedCount;
+      totalAIEngineSkipped += response.skippedCount;
+      
+      // 🚀 FIX: Use type assertion to cast response safely and satisfy the compiler
+      const rawResponseObj = response as any;
+      if (rawResponseObj.skippedRecords && Array.isArray(rawResponseObj.skippedRecords)) {
+        skippedRecords.push(...rawResponseObj.skippedRecords);
+      }
     }
 
-    // 5. Send back structured summary tracking fields
+    // 5. Send back structured summary tracking fields including the raw skipped rows array
     res.status(200).json({
       records: finalRecords,
       totalImported: finalRecords.length,
-      totalSkipped: totalSkipped,
+      totalSkipped: skippedRecords.length + totalAIEngineSkipped,
+      skippedRecords: skippedRecords // 🚀 Passed down directly to power your new frontend dropdown card!
     });
 
   } catch (error: any) {
