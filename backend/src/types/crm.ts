@@ -1,3 +1,5 @@
+// backend/src/types/crm.ts
+
 export interface CRMRecord {
   created_at: string | null;
   name: string | null;
@@ -19,4 +21,5 @@ export interface CRMRecord {
 export interface AIResponseBatch {
   records: CRMRecord[];
   skippedCount: number;
+  skippedRecords?: any[]; // 🚀 FIX: Added this optional array field to satisfy TypeScript compile checks
 }

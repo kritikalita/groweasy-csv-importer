@@ -1,84 +1,77 @@
+// backend/src/services/aiService.ts
 import { Groq } from 'groq-sdk';
-import Papa from 'papaparse';
 import { CRMRecord, AIResponseBatch } from '../types/crm';
 import dotenv from 'dotenv';
 
-// Force load environmental configurations right here
 dotenv.config();
 
-// Explicitly pass the key inside the configuration object
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY || ''
 });
 
 export class AIService {
   /**
-   * Step A: Parse raw CSV text into simple key-value objects
-   */
-  public static parseCSV(csvText: string): any[] {
-    const parsed = Papa.parse(csvText, {
-      header: true,
-      skipEmptyLines: true,
-    });
-    return parsed.data;
-  }
-
-  /**
-   * Step B: Send a batch of messy rows to Groq to map and clean
+   * Processes a batch of raw, unvalidated CSV rows using the LLM.
    */
   public static async processBatch(batch: any[]): Promise<AIResponseBatch> {
     const systemInstruction = `
-      You are an expert CRM Data Migrator. Your job is to map an array of arbitrary key-value objects extracted from a messy user CSV into our standardized GrowEasy CRM format.
+      You are an expert CRM Data Migration engine for GrowEasy. Map the incoming array of messy objects into our standardized schema.
 
-      Target Schema Fields & Validation Rules:
-      - created_at: Ensure it's a valid string convertible via 'new Date(val)'.
-      - name: Lead full name string.
-      - email: Primary email address string.
-      - country_code: Country phone code starting with '+' (e.g., '+91').
-      - mobile_without_country_code: Mobile number without the country code prefix.
-      - company: Company name string.
-      - city: City string.
-      - state: State string.
-      - country: Country string.
-      - lead_owner: Email or ID of the owner.
-      - crm_status: MUST strictly be one of: ['GOOD_LEAD_FOLLOW_UP', 'DID_NOT_CONNECT', 'BAD_LEAD', 'SALE_DONE']. If the input data contains phrases like "interested", "call back", or "follow up", map it to 'GOOD_LEAD_FOLLOW_UP'. If it contains "busy", "no answer", or "disconnected", map it to 'DID_NOT_CONNECT'. If it contains "not interested", "wrong number", or "junk", map it to 'BAD_LEAD'. If it contains "won", "closed", "purchased", or "done", map it to 'SALE_DONE'. If there is absolutely no hint, default it intelligently to 'GOOD_LEAD_FOLLOW_UP' instead of leaving it null.
-      - data_source: MUST strictly be one of: ['leads_on_demand', 'meridian_tower', 'eden_park', 'varah_swamy', 'sarjapur_plots']. If none match confidently, leave it as an empty string "".
-      - possession_time: Property possession time notes.
-      - description: Additional description string.
-      - crm_note: Use this for remarks, follow-up notes, comments, extra phone numbers, or extra emails.
+      Target Schema Fields:
+      - created_at: ISO timestamp string. If missing/invalid, use "2026-07-09T22:50:00.000Z".
+      - name: Full name string. Default to "Unknown Lead".
+      - email: Primary email string or null.
+      - country_code: Country phone code string (e.g. "+91").
+      - mobile_without_country_code: Digits only string, no country code prefix.
+      - company, city, state, country, lead_owner, possession_time, description: Extract string values if available, else null.
+      - crm_status: MUST strictly be one of: ['GOOD_LEAD_FOLLOW_UP', 'DID_NOT_CONNECT', 'BAD_LEAD', 'SALE_DONE'].
+        * Map "bought", "won", "paid" -> "SALE_DONE"
+        * Map "no answer", "busy", "ringing" -> "DID_NOT_CONNECT"
+        * Map "not interested", "junk" -> "BAD_LEAD"
+        * Default fallback -> "GOOD_LEAD_FOLLOW_UP"
+      - data_source: Strictly choose one of: ['leads_on_demand', 'meridian_tower', 'eden_park', 'varah_swamy', 'sarjapur_plots'] or leave as "".
+      - crm_note: General notes/remarks. Use '\\n' for internal newlines.
 
-      CRITICAL SYSTEM EXTRACTION RULES:
-      1. Skip Criteria: If a record has NEITHER a valid email nor a mobile number, completely omit it from the returned records array and increment skippedCount.
-      2. Multiple Contacts: If multiple email addresses or mobile numbers exist in a single record, map the first one to the standard field and append all remaining ones explicitly into 'crm_note'.
-      3. Clean Rows: Do not introduce unintended raw newline breaks inside text values. Use '\\n' if a break is needed.
+      CRITICAL FILTER RULE (Rule 7):
+      1. If an object contains absolutely NO email address AND NO phone number anywhere in its properties, skip it by adding it to the 'skippedRecords' array instead.
+      2. GARBAGE & PLACEHOLDER DATA FILTER: If a row contains placeholder text strings such as "Broken Row Data", "junk lead", or has headers but completely empty fields, you MUST classify it as malformed. Do not process it; add it to the 'skippedRecords' array instead with a clear reason.
 
-      Respond ONLY with a valid JSON object matching this structure:
+      OUTPUT FORMAT:
+      You MUST respond with a single valid JSON object containing exactly these two keys:
       {
-        "records": [],
-        "skippedCount": 0
+        "records": [ { ... }, { ... } ],
+        "skippedRecords": [ { "name": "...", "reason": "..." } ]
       }
     `;
 
     try {
       const response = await groq.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
+        model: 'llama-3.1-8b-instant',   // 🚀 High availability fallback model
         messages: [
           { role: 'system', content: systemInstruction },
-          { role: 'user', content: `Process this raw batch data:\n${JSON.stringify(batch)}` }
+          { role: 'user', content: `Process this raw JSON array data. Return raw minified JSON only, do NOT wrap your response in markdown code blocks or backticks:\n${JSON.stringify(batch)}` }
         ],
-        // This ensures the model outputs exactly structured JSON
         response_format: { type: "json_object" }
       });
 
-      const text = response.choices[0]?.message?.content;
-      if (!text) {
-        throw new Error('Received empty response from AI model.');
-      }
+      const text = response.choices[0]?.message?.content || '{}';
+      const aiResult = JSON.parse(text);
 
-      return JSON.parse(text) as AIResponseBatch;
+      const records = Array.isArray(aiResult.records) ? aiResult.records : [];
+      const skippedRecords = Array.isArray(aiResult.skippedRecords) ? aiResult.skippedRecords : [];
+
+      return {
+        records,
+        skippedCount: skippedRecords.length,
+        skippedRecords
+      };
     } catch (error) {
-      console.error('Error compiling AI batch response:', error);
-      return { records: [], skippedCount: batch.length };
+      console.error('AI Batch Process Error:', error);
+      return { 
+        records: [], 
+        skippedCount: batch.length,
+        skippedRecords: batch.map(b => ({ name: b['Client Name'] || 'Unknown', reason: "Processing Error" }))
+      };
     }
   }
 }
