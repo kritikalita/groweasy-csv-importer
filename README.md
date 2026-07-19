@@ -331,7 +331,7 @@ CRM Ready Output
 
 # 👨‍💻 Author
 
-**Sk Sofiquee Fiaz**
+**Kriti Kalita**
 
 Computer Science Engineer | Full Stack Developer | AI & Cloud Enthusiast
 
